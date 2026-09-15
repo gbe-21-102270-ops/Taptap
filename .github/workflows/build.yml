@@ -1,0 +1,741 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate project
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/example/taptap app/src/main/res/layout app/src/main/res/values app/src/main/res/xml
+          cat > app/build.gradle.kts << 'TAPTAP_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.taptap"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.taptap"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0 (사전+모두닫기)"
+              }
+
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = rootProject.file("taptap.jks")
+                      storePassword = "taptap123"
+                      keyAlias = "taptap"
+                      keyPassword = "taptap123"
+                  }
+              }
+
+              buildTypes {
+                  debug {
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          TAPTAP_EOF
+          cat > app/src/main/AndroidManifest.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.TapTap">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".TapService"
+                      android:exported="true"
+                      android:label="@string/service_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/tap_config" />
+                  </service>
+
+              </application>
+          </manifest>
+          TAPTAP_EOF
+          cat > app/src/main/java/com/example/taptap/MainActivity.kt << 'TAPTAP_EOF'
+          package com.example.taptap
+
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.CheckBox
+          import android.widget.SeekBar
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var status: TextView
+              private lateinit var sizeLabel: TextView
+              private lateinit var alphaLabel: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+
+                  prefs = getSharedPreferences(TapService.PREFS, Context.MODE_PRIVATE)
+
+                  status = findViewById(R.id.status)
+                  findViewById<TextView>(R.id.verLabel).text =
+                      "버전 " + packageManager.getPackageInfo(packageName, 0).versionName
+                  sizeLabel = findViewById(R.id.sizeLabel)
+                  alphaLabel = findViewById(R.id.alphaLabel)
+
+                  val sizeBar = findViewById<SeekBar>(R.id.sizeBar)
+                  val alphaBar = findViewById<SeekBar>(R.id.alphaBar)
+                  val vibrateBox = findViewById<CheckBox>(R.id.vibrateBox)
+                  val recentsBox = findViewById<CheckBox>(R.id.recentsBox)
+
+                  // 크기: 40 ~ 100 dp
+                  val size = prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)
+                  sizeBar.max = 60
+                  sizeBar.progress = size - 40
+                  showSize(size)
+
+                  // 투명도: 20 ~ 100 %
+                  val alpha = prefs.getInt(TapService.KEY_ALPHA, TapService.DEF_ALPHA)
+                  alphaBar.max = 80
+                  alphaBar.progress = alpha - 20
+                  showAlpha(alpha)
+
+                  vibrateBox.isChecked = prefs.getBoolean(TapService.KEY_VIBRATE, TapService.DEF_VIBRATE)
+                  recentsBox.isChecked =
+                      prefs.getBoolean(TapService.KEY_SHOW_RECENTS, TapService.DEF_SHOW_RECENTS)
+
+                  sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showSize(p + 40)
+                      override fun onStartTrackingTouch(sb: SeekBar?) {}
+                      override fun onStopTrackingTouch(sb: SeekBar?) {
+                          prefs.edit().putInt(TapService.KEY_SIZE, (sb?.progress ?: 0) + 40).apply()
+                      }
+                  })
+
+                  alphaBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showAlpha(p + 20)
+                      override fun onStartTrackingTouch(sb: SeekBar?) {}
+                      override fun onStopTrackingTouch(sb: SeekBar?) {
+                          prefs.edit().putInt(TapService.KEY_ALPHA, (sb?.progress ?: 0) + 20).apply()
+                      }
+                  })
+
+                  vibrateBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_VIBRATE, c).apply()
+                  }
+                  recentsBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_SHOW_RECENTS, c).apply()
+                  }
+
+                  findViewById<Button>(R.id.btnOpenSettings).setOnClickListener {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+
+                  findViewById<Button>(R.id.btnResetPos).setOnClickListener {
+                      prefs.edit().remove(TapService.KEY_X).remove(TapService.KEY_Y).apply()
+                      prefs.edit().putInt(TapService.KEY_SIZE,
+                          prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)).apply()
+                      status.text = "버튼 위치를 오른쪽 아래로 되돌렸습니다"
+                  }
+              }
+
+              private fun showSize(dp: Int) {
+                  sizeLabel.text = "버튼 크기: ${dp}dp"
+              }
+
+              private fun showAlpha(pct: Int) {
+                  alphaLabel.text = "버튼 진하기: ${pct}%"
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  status.text = if (isServiceEnabled())
+                      "✅ 켜져 있습니다"
+                  else
+                      "⚠️ 꺼져 있습니다 — 아래 버튼을 눌러 켜주세요"
+              }
+
+              private fun isServiceEnabled(): Boolean {
+                  val enabled = Settings.Secure.getString(
+                      contentResolver,
+                      Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                  ) ?: return false
+                  return enabled.contains("$packageName/$packageName.TapService")
+              }
+          }
+          TAPTAP_EOF
+          cat > app/src/main/java/com/example/taptap/TapService.kt << 'TAPTAP_EOF'
+          package com.example.taptap
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import kotlin.math.abs
+
+          class TapService : AccessibilityService() {
+
+              companion object {
+                  const val PREFS = "taptap_prefs"
+                  const val KEY_SIZE = "button_size_dp"
+                  const val KEY_ALPHA = "button_alpha"
+                  const val KEY_VIBRATE = "vibrate"
+                  const val KEY_SHOW_RECENTS = "show_recents"
+                  const val KEY_X = "pos_x"
+                  const val KEY_Y = "pos_y"
+
+                  const val DEF_SIZE = 56
+                  const val DEF_ALPHA = 70
+                  const val DEF_VIBRATE = true
+                  const val DEF_SHOW_RECENTS = true
+
+                  private const val DICT_URL = "https://en.dict.naver.com/"
+              }
+
+              private var panel: View? = null
+              private lateinit var prefs: SharedPreferences
+              private lateinit var wm: WindowManager
+              private var params: WindowManager.LayoutParams? = null
+              private val handler = Handler(Looper.getMainLooper())
+
+              private val prefListener =
+                  SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                      if (key != KEY_X && key != KEY_Y) rebuild()
+                  }
+
+              override fun onServiceConnected() {
+                  prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                  prefs.registerOnSharedPreferenceChangeListener(prefListener)
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  rebuild()
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun rebuild() {
+                  panel?.let {
+                      try {
+                          wm.removeView(it)
+                      } catch (_: Exception) {
+                      }
+                  }
+                  panel = null
+
+                  val sizeDp = prefs.getInt(KEY_SIZE, DEF_SIZE)
+                  val sizePx = dp(sizeDp)
+                  val alphaPct = prefs.getInt(KEY_ALPHA, DEF_ALPHA)
+                  val showRecents = prefs.getBoolean(KEY_SHOW_RECENTS, DEF_SHOW_RECENTS)
+
+                  val container = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      alpha = alphaPct / 100f
+                  }
+
+                  val dict = makeCircle("📖", "#2E7D32", sizeDp, sizePx) {
+                      buzz(35)
+                      goToDictionary()
+                  }
+                  container.addView(dict)
+
+                  if (showRecents) {
+                      val recents = makeCircle("🧹", "#C62828", sizeDp, sizePx) {
+                          buzz(35)
+                          closeAllApps()
+                      }
+                      (recents.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
+                      container.addView(recents)
+                  }
+
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+
+                  val dm = resources.displayMetrics
+                  val stack = if (showRecents) sizePx * 2 + dp(10) else sizePx
+                  lp.x = prefs.getInt(KEY_X, dm.widthPixels - sizePx - dp(16))
+                  lp.y = prefs.getInt(KEY_Y, dm.heightPixels - stack - dp(120))
+
+                  params = lp
+                  panel = container
+                  try {
+                      wm.addView(container, lp)
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun makeCircle(
+                  emoji: String,
+                  color: String,
+                  sizeDp: Int,
+                  sizePx: Int,
+                  onTap: () -> Unit
+              ): View {
+                  val tv = TextView(this).apply {
+                      text = emoji
+                      textSize = sizeDp * 0.42f
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.WHITE)
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(Color.parseColor(color))
+                          setStroke(dp(2), Color.parseColor("#66FFFFFF"))
+                      }
+                      elevation = dp(6).toFloat()
+                      layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
+                  }
+                  attachTouch(tv, onTap)
+                  return tv
+              }
+
+              private fun attachTouch(view: View, onTap: () -> Unit) {
+                  var startX = 0
+                  var startY = 0
+                  var touchX = 0f
+                  var touchY = 0f
+                  var downTime = 0L
+                  var moved = false
+
+                  view.setOnTouchListener { v, e ->
+                      val lp = params ?: return@setOnTouchListener false
+                      val root = panel ?: return@setOnTouchListener false
+
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              startX = lp.x
+                              startY = lp.y
+                              touchX = e.rawX
+                              touchY = e.rawY
+                              downTime = System.currentTimeMillis()
+                              moved = false
+                              v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).start()
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (e.rawX - touchX).toInt()
+                              val dy = (e.rawY - touchY).toInt()
+                              if (abs(dx) > dp(8) || abs(dy) > dp(8)) moved = true
+                              if (moved) {
+                                  lp.x = startX + dx
+                                  lp.y = startY + dy
+                                  try {
+                                      wm.updateViewLayout(root, lp)
+                                  } catch (_: Exception) {
+                                  }
+                              }
+                              true
+                          }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
+                              if (moved) {
+                                  prefs.edit()
+                                      .putInt(KEY_X, lp.x)
+                                      .putInt(KEY_Y, lp.y)
+                                      .apply()
+                              } else if (System.currentTimeMillis() - downTime < 600) {
+                                  onTap()
+                              }
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+              }
+
+              private val clearLabels = listOf(
+                  "모두 닫기", "모두 지우기", "전체 닫기", "전체 삭제", "모두 삭제",
+                  "Clear all", "Close all", "CLEAR ALL"
+              )
+
+              private fun closeAllApps() {
+                  performGlobalAction(GLOBAL_ACTION_RECENTS)
+                  tryClear(0)
+              }
+
+              private fun tryClear(attempt: Int) {
+                  if (attempt > 6) return
+                  handler.postDelayed({
+                      if (!clickClearButton()) {
+                          tryClear(attempt + 1)
+                      } else {
+                          handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_HOME) }, 500)
+                      }
+                  }, if (attempt == 0) 600 else 300)
+              }
+
+              private fun clickClearButton(): Boolean {
+                  val roots = ArrayList<AccessibilityNodeInfo>()
+                  try {
+                      rootInActiveWindow?.let { roots.add(it) }
+                      for (w in windows) {
+                          w.root?.let { roots.add(it) }
+                      }
+                  } catch (_: Exception) {
+                  }
+
+                  for (root in roots) {
+                      for (label in clearLabels) {
+                          val found = try {
+                              root.findAccessibilityNodeInfosByText(label)
+                          } catch (_: Exception) {
+                              null
+                          } ?: continue
+
+                          for (node in found) {
+                              if (clickNode(node)) return true
+                          }
+                      }
+                  }
+                  return false
+              }
+
+              private fun clickNode(node: AccessibilityNodeInfo?): Boolean {
+                  var n = node
+                  var depth = 0
+                  while (n != null && depth < 5) {
+                      if (n.isClickable) {
+                          return n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      }
+                      n = n.parent
+                      depth++
+                  }
+                  return false
+              }
+
+              private fun goToDictionary() {
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+                  handler.postDelayed({ openEnDict() }, 350)
+              }
+
+              private fun openEnDict() {
+                  val uri = Uri.parse(DICT_URL)
+                  val flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                      Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                      Intent.FLAG_ACTIVITY_NO_HISTORY
+
+                  val chrome = Intent(Intent.ACTION_VIEW, uri).apply {
+                      setPackage("com.android.chrome")
+                      addFlags(flags)
+                  }
+                  try {
+                      startActivity(chrome)
+                      return
+                  } catch (_: Exception) {
+                  }
+
+                  try {
+                      startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(flags))
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun buzz(ms: Long) {
+                  if (!prefs.getBoolean(KEY_VIBRATE, DEF_VIBRATE)) return
+                  try {
+                      val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+                      } else {
+                          @Suppress("DEPRECATION")
+                          v.vibrate(ms)
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+
+              override fun onDestroy() {
+                  try {
+                      prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
+                  } catch (_: Exception) {
+                  }
+                  panel?.let {
+                      try {
+                          wm.removeView(it)
+                      } catch (_: Exception) {
+                      }
+                  }
+                  panel = null
+                  super.onDestroy()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+          }
+          TAPTAP_EOF
+          cat > app/src/main/res/layout/activity_main.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:padding="28dp">
+
+                  <TextView
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="TapTap"
+                      android:textSize="30sp"
+                      android:textStyle="bold" />
+
+                  <TextView
+                      android:id="@+id/verLabel"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="2dp"
+                      android:textSize="13sp"
+                      android:text="버전" />
+
+                  <TextView
+                      android:id="@+id/status"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:textSize="16sp"
+                      android:text="상태 확인 중..." />
+
+                  <Button
+                      android:id="@+id/btnOpenSettings"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:text="접근성 설정 열기" />
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="28dp"
+                      android:textSize="15sp"
+                      android:lineSpacingExtra="5dp"
+                      android:text="화면에 떠 있는 버튼을 짧게 탭하면\n• 📖 → 홈으로 나간 뒤 네이버 영어사전 열기\n• 🧹 → 열려 있는 앱 모두 닫기\n\n꾹 눌러 끌면 위치를 옮길 수 있습니다." />
+
+                  <View
+                      android:layout_width="match_parent"
+                      android:layout_height="1dp"
+                      android:layout_marginTop="24dp"
+                      android:background="#33888888" />
+
+                  <TextView
+                      android:id="@+id/sizeLabel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="24dp"
+                      android:textSize="15sp"
+                      android:text="버튼 크기" />
+
+                  <SeekBar
+                      android:id="@+id/sizeBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" />
+
+                  <TextView
+                      android:id="@+id/alphaLabel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="24dp"
+                      android:textSize="15sp"
+                      android:text="버튼 진하기" />
+
+                  <SeekBar
+                      android:id="@+id/alphaBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" />
+
+                  <CheckBox
+                      android:id="@+id/vibrateBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:text="누를 때 진동" />
+
+                  <CheckBox
+                      android:id="@+id/recentsBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="🧹 모두 닫기 버튼 표시" />
+
+                  <Button
+                      android:id="@+id/btnResetPos"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:text="버튼 위치 초기화" />
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:layout_marginBottom="20dp"
+                      android:textSize="13sp"
+                      android:lineSpacingExtra="4dp"
+                      android:text="설정은 바꾸는 즉시 적용됩니다.\n버튼이 화면 밖으로 나가 안 보이면\n위치 초기화를 누르세요." />
+
+              </LinearLayout>
+          </ScrollView>
+          TAPTAP_EOF
+          cat > app/src/main/res/values/strings.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">TapTap</string>
+              <string name="service_name">TapTap 제스처</string>
+              <string name="service_desc">화면에 떠 있는 버튼으로 네이버 영어사전을 열거나 열려 있는 앱을 모두 닫습니다.</string>
+          </resources>
+          TAPTAP_EOF
+          cat > app/src/main/res/values/themes.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.TapTap" parent="Theme.Material3.DayNight.NoActionBar" />
+          </resources>
+          TAPTAP_EOF
+          cat > app/src/main/res/xml/tap_config.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/service_desc"
+              android:notificationTimeout="100" />
+          TAPTAP_EOF
+          cat > build.gradle.kts << 'TAPTAP_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          TAPTAP_EOF
+          cat > gradle.properties << 'TAPTAP_EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          TAPTAP_EOF
+          cat > settings.gradle.kts << 'TAPTAP_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TapTap"
+          include(":app")
+          TAPTAP_EOF
+          cat > taptap.jks.b64 << 'TAPTAP_EOF'
+          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
+          TAPTAP_EOF
+          base64 -d taptap.jks.b64 > taptap.jks
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: |
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v2.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: TapTap v2 (build ${{ github.run_number }})
+          files: app/build/outputs/apk/debug/*.apk
