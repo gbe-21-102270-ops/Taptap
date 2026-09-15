@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TapTap</string>
+    <string name="service_name">TapTap 제스처</string>
+    <string name="service_desc">화면 오른쪽 가장자리를 두 번 탭하면 네이버 영어사전, 세 번 탭하면 뒤로가기를 실행합니다.</string>
+</resources>
