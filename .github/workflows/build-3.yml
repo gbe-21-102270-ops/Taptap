@@ -1,0 +1,603 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate project
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/example/taptap app/src/main/res/layout app/src/main/res/values app/src/main/res/xml
+          cat > app/build.gradle.kts << 'TAPTAP_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.taptap"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.taptap"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          TAPTAP_EOF
+          cat > app/src/main/AndroidManifest.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.TapTap">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".TapService"
+                      android:exported="true"
+                      android:label="@string/service_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/tap_config" />
+                  </service>
+
+              </application>
+          </manifest>
+          TAPTAP_EOF
+          cat > app/src/main/java/com/example/taptap/MainActivity.kt << 'TAPTAP_EOF'
+          package com.example.taptap
+
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.CheckBox
+          import android.widget.SeekBar
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var status: TextView
+              private lateinit var sizeLabel: TextView
+              private lateinit var alphaLabel: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+
+                  prefs = getSharedPreferences(TapService.PREFS, Context.MODE_PRIVATE)
+
+                  status = findViewById(R.id.status)
+                  sizeLabel = findViewById(R.id.sizeLabel)
+                  alphaLabel = findViewById(R.id.alphaLabel)
+
+                  val sizeBar = findViewById<SeekBar>(R.id.sizeBar)
+                  val alphaBar = findViewById<SeekBar>(R.id.alphaBar)
+                  val vibrateBox = findViewById<CheckBox>(R.id.vibrateBox)
+
+                  // 크기: 40 ~ 100 dp
+                  val size = prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)
+                  sizeBar.max = 60
+                  sizeBar.progress = size - 40
+                  showSize(size)
+
+                  // 투명도: 20 ~ 100 %
+                  val alpha = prefs.getInt(TapService.KEY_ALPHA, TapService.DEF_ALPHA)
+                  alphaBar.max = 80
+                  alphaBar.progress = alpha - 20
+                  showAlpha(alpha)
+
+                  vibrateBox.isChecked = prefs.getBoolean(TapService.KEY_VIBRATE, TapService.DEF_VIBRATE)
+
+                  sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showSize(p + 40)
+                      override fun onStartTrackingTouch(sb: SeekBar?) {}
+                      override fun onStopTrackingTouch(sb: SeekBar?) {
+                          prefs.edit().putInt(TapService.KEY_SIZE, (sb?.progress ?: 0) + 40).apply()
+                      }
+                  })
+
+                  alphaBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showAlpha(p + 20)
+                      override fun onStartTrackingTouch(sb: SeekBar?) {}
+                      override fun onStopTrackingTouch(sb: SeekBar?) {
+                          prefs.edit().putInt(TapService.KEY_ALPHA, (sb?.progress ?: 0) + 20).apply()
+                      }
+                  })
+
+                  vibrateBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_VIBRATE, c).apply()
+                  }
+
+                  findViewById<Button>(R.id.btnOpenSettings).setOnClickListener {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+
+                  findViewById<Button>(R.id.btnResetPos).setOnClickListener {
+                      prefs.edit().remove(TapService.KEY_X).remove(TapService.KEY_Y).apply()
+                      prefs.edit().putInt(TapService.KEY_SIZE,
+                          prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)).apply()
+                      status.text = "버튼 위치를 오른쪽 아래로 되돌렸습니다"
+                  }
+              }
+
+              private fun showSize(dp: Int) {
+                  sizeLabel.text = "버튼 크기: ${dp}dp"
+              }
+
+              private fun showAlpha(pct: Int) {
+                  alphaLabel.text = "버튼 진하기: ${pct}%"
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  status.text = if (isServiceEnabled())
+                      "✅ 켜져 있습니다"
+                  else
+                      "⚠️ 꺼져 있습니다 — 아래 버튼을 눌러 켜주세요"
+              }
+
+              private fun isServiceEnabled(): Boolean {
+                  val enabled = Settings.Secure.getString(
+                      contentResolver,
+                      Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                  ) ?: return false
+                  return enabled.contains("$packageName/$packageName.TapService")
+              }
+          }
+          TAPTAP_EOF
+          cat > app/src/main/java/com/example/taptap/TapService.kt << 'TAPTAP_EOF'
+          package com.example.taptap
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.TextView
+          import kotlin.math.abs
+
+          class TapService : AccessibilityService() {
+
+              companion object {
+                  const val PREFS = "taptap_prefs"
+                  const val KEY_SIZE = "button_size_dp"
+                  const val KEY_ALPHA = "button_alpha"
+                  const val KEY_VIBRATE = "vibrate"
+                  const val KEY_X = "pos_x"
+                  const val KEY_Y = "pos_y"
+
+                  const val DEF_SIZE = 56
+                  const val DEF_ALPHA = 70
+                  const val DEF_VIBRATE = true
+
+                  private const val DICT_URL = "https://en.dict.naver.com/"
+              }
+
+              private var button: View? = null
+              private lateinit var prefs: SharedPreferences
+              private lateinit var wm: WindowManager
+              private var params: WindowManager.LayoutParams? = null
+              private val handler = Handler(Looper.getMainLooper())
+
+              private val prefListener =
+                  SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                      if (key != KEY_X && key != KEY_Y) rebuild()
+                  }
+
+              override fun onServiceConnected() {
+                  prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                  prefs.registerOnSharedPreferenceChangeListener(prefListener)
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  rebuild()
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun rebuild() {
+                  button?.let {
+                      try {
+                          wm.removeView(it)
+                      } catch (_: Exception) {
+                      }
+                  }
+                  button = null
+
+                  val sizeDp = prefs.getInt(KEY_SIZE, DEF_SIZE)
+                  val sizePx = dp(sizeDp)
+                  val alphaPct = prefs.getInt(KEY_ALPHA, DEF_ALPHA)
+
+                  val view = TextView(this).apply {
+                      text = "📖"
+                      textSize = (sizeDp * 0.42f)
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.WHITE)
+                      alpha = alphaPct / 100f
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(Color.parseColor("#2E7D32"))
+                          setStroke(dp(2), Color.parseColor("#66FFFFFF"))
+                      }
+                      elevation = dp(6).toFloat()
+                  }
+
+                  val lp = WindowManager.LayoutParams(
+                      sizePx,
+                      sizePx,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+
+                  val dm = resources.displayMetrics
+                  lp.x = prefs.getInt(KEY_X, dm.widthPixels - sizePx - dp(16))
+                  lp.y = prefs.getInt(KEY_Y, dm.heightPixels - sizePx - dp(120))
+
+                  params = lp
+                  attachTouch(view, lp)
+
+                  button = view
+                  try {
+                      wm.addView(view, lp)
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun attachTouch(view: View, lp: WindowManager.LayoutParams) {
+                  var startX = 0
+                  var startY = 0
+                  var touchX = 0f
+                  var touchY = 0f
+                  var downTime = 0L
+                  var moved = false
+
+                  view.setOnTouchListener { v, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              startX = lp.x
+                              startY = lp.y
+                              touchX = e.rawX
+                              touchY = e.rawY
+                              downTime = System.currentTimeMillis()
+                              moved = false
+                              v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).start()
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (e.rawX - touchX).toInt()
+                              val dy = (e.rawY - touchY).toInt()
+                              if (abs(dx) > dp(8) || abs(dy) > dp(8)) moved = true
+                              if (moved) {
+                                  lp.x = startX + dx
+                                  lp.y = startY + dy
+                                  try {
+                                      wm.updateViewLayout(v, lp)
+                                  } catch (_: Exception) {
+                                  }
+                              }
+                              true
+                          }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
+                              if (moved) {
+                                  prefs.edit()
+                                      .putInt(KEY_X, lp.x)
+                                      .putInt(KEY_Y, lp.y)
+                                      .apply()
+                              } else if (System.currentTimeMillis() - downTime < 600) {
+                                  buzz(35)
+                                  goToDictionary()
+                              }
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+              }
+
+              private fun goToDictionary() {
+                  // 1) 홈으로 나가서 화면을 비운다
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+
+                  // 2) 잠깐 뒤 사전을 새 작업으로 연다
+                  handler.postDelayed({ openEnDict() }, 350)
+              }
+
+              private fun openEnDict() {
+                  val uri = Uri.parse(DICT_URL)
+                  val flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                      Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                      Intent.FLAG_ACTIVITY_NO_HISTORY
+
+                  val chrome = Intent(Intent.ACTION_VIEW, uri).apply {
+                      setPackage("com.android.chrome")
+                      addFlags(flags)
+                  }
+                  try {
+                      startActivity(chrome)
+                      return
+                  } catch (_: Exception) {
+                  }
+
+                  try {
+                      startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(flags))
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun buzz(ms: Long) {
+                  if (!prefs.getBoolean(KEY_VIBRATE, DEF_VIBRATE)) return
+                  try {
+                      val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+                      } else {
+                          @Suppress("DEPRECATION")
+                          v.vibrate(ms)
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+
+              override fun onDestroy() {
+                  try {
+                      prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
+                  } catch (_: Exception) {
+                  }
+                  button?.let {
+                      try {
+                          wm.removeView(it)
+                      } catch (_: Exception) {
+                      }
+                  }
+                  button = null
+                  super.onDestroy()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+          }
+          TAPTAP_EOF
+          cat > app/src/main/res/layout/activity_main.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:padding="28dp">
+
+                  <TextView
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="TapTap"
+                      android:textSize="30sp"
+                      android:textStyle="bold" />
+
+                  <TextView
+                      android:id="@+id/status"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:textSize="16sp"
+                      android:text="상태 확인 중..." />
+
+                  <Button
+                      android:id="@+id/btnOpenSettings"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:text="접근성 설정 열기" />
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="28dp"
+                      android:textSize="15sp"
+                      android:lineSpacingExtra="5dp"
+                      android:text="화면에 떠 있는 📖 버튼을\n• 짧게 탭 → 홈으로 나간 뒤 네이버 영어사전 열기\n• 길게 끌기 → 버튼 위치 옮기기" />
+
+                  <View
+                      android:layout_width="match_parent"
+                      android:layout_height="1dp"
+                      android:layout_marginTop="24dp"
+                      android:background="#33888888" />
+
+                  <TextView
+                      android:id="@+id/sizeLabel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="24dp"
+                      android:textSize="15sp"
+                      android:text="버튼 크기" />
+
+                  <SeekBar
+                      android:id="@+id/sizeBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" />
+
+                  <TextView
+                      android:id="@+id/alphaLabel"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="24dp"
+                      android:textSize="15sp"
+                      android:text="버튼 진하기" />
+
+                  <SeekBar
+                      android:id="@+id/alphaBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" />
+
+                  <CheckBox
+                      android:id="@+id/vibrateBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:text="누를 때 진동" />
+
+                  <Button
+                      android:id="@+id/btnResetPos"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:text="버튼 위치 초기화" />
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:layout_marginBottom="20dp"
+                      android:textSize="13sp"
+                      android:lineSpacingExtra="4dp"
+                      android:text="설정은 바꾸는 즉시 적용됩니다.\n버튼이 화면 밖으로 나가 안 보이면\n위치 초기화를 누르세요." />
+
+              </LinearLayout>
+          </ScrollView>
+          TAPTAP_EOF
+          cat > app/src/main/res/values/strings.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">TapTap</string>
+              <string name="service_name">TapTap 제스처</string>
+              <string name="service_desc">화면에 떠 있는 버튼을 누르면 홈으로 나간 뒤 네이버 영어사전을 엽니다.</string>
+          </resources>
+          TAPTAP_EOF
+          cat > app/src/main/res/values/themes.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.TapTap" parent="Theme.Material3.DayNight.NoActionBar" />
+          </resources>
+          TAPTAP_EOF
+          cat > app/src/main/res/xml/tap_config.xml << 'TAPTAP_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/service_desc"
+              android:notificationTimeout="100" />
+          TAPTAP_EOF
+          cat > build.gradle.kts << 'TAPTAP_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          TAPTAP_EOF
+          cat > gradle.properties << 'TAPTAP_EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          TAPTAP_EOF
+          cat > settings.gradle.kts << 'TAPTAP_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TapTap"
+          include(":app")
+          TAPTAP_EOF
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: TapTap build ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/*.apk
