@@ -33,8 +33,8 @@ jobs:
                   applicationId = "com.example.taptap"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 8
-                  versionName = "8.0"
+                  versionCode = 9
+                  versionName = "9.0"
               }
 
               signingConfigs {
@@ -79,8 +79,20 @@ jobs:
               <queries>
                   <intent>
                       <action android:name="android.intent.action.VIEW" />
+                      <category android:name="android.intent.category.BROWSABLE" />
                       <data android:scheme="https" />
                   </intent>
+
+                  <package android:name="com.sec.android.app.sbrowser" />
+                  <package android:name="com.naver.whale" />
+                  <package android:name="org.mozilla.firefox" />
+                  <package android:name="com.microsoft.emmx" />
+                  <package android:name="com.brave.browser" />
+                  <package android:name="com.opera.browser" />
+                  <package android:name="com.opera.mini.native" />
+                  <package android:name="com.duckduckgo.mobile.android" />
+                  <package android:name="com.kiwibrowser.browser" />
+                  <package android:name="com.android.chrome" />
               </queries>
 
               <application
@@ -154,6 +166,7 @@ jobs:
                   val instaBox = findViewById<CheckBox>(R.id.instaBox)
                   val flatBox = findViewById<CheckBox>(R.id.flatBox)
                   val dndBox = findViewById<CheckBox>(R.id.dndBox)
+                  val askBrowserBox = findViewById<CheckBox>(R.id.askBrowserBox)
 
                   // 크기: 40 ~ 100 dp
                   val size = prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)
@@ -174,6 +187,8 @@ jobs:
                       prefs.getBoolean(TapService.KEY_SHOW_INSTA, TapService.DEF_SHOW_INSTA)
                   flatBox.isChecked = prefs.getBoolean(TapService.KEY_FLAT, TapService.DEF_FLAT)
                   dndBox.isChecked = prefs.getBoolean(TapService.KEY_DND, TapService.DEF_DND)
+                  askBrowserBox.isChecked =
+                      prefs.getBoolean(TapService.KEY_ASK_BROWSER, TapService.DEF_ASK_BROWSER)
 
                   sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                       override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showSize(p + 40)
@@ -205,6 +220,9 @@ jobs:
                   }
                   dndBox.setOnCheckedChangeListener { _, c ->
                       prefs.edit().putBoolean(TapService.KEY_DND, c).apply()
+                  }
+                  askBrowserBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_ASK_BROWSER, c).apply()
                   }
 
                   findViewById<Button>(R.id.btnOpenSettings).setOnClickListener {
@@ -293,6 +311,7 @@ jobs:
                   const val KEY_SHOW_INSTA = "show_insta"
                   const val KEY_FLAT = "flat_button"
                   const val KEY_DND = "block_noti"
+                  const val KEY_ASK_BROWSER = "ask_browser"
                   const val KEY_X = "pos_x"
                   const val KEY_Y = "pos_y"
 
@@ -303,6 +322,7 @@ jobs:
                   const val DEF_SHOW_INSTA = true
                   const val DEF_FLAT = false
                   const val DEF_DND = true
+                  const val DEF_ASK_BROWSER = false
 
                   private const val DICT_URL = "https://en.dict.naver.com/"
                   private const val INSTA_URL = "https://www.instagram.com/"
@@ -684,28 +704,43 @@ jobs:
                   val uri = Uri.parse(INSTA_URL)
                   val flags = Intent.FLAG_ACTIVITY_NEW_TASK
 
+                  // 매번 고르고 싶다면 선택 창부터
+                  if (prefs.getBoolean(KEY_ASK_BROWSER, DEF_ASK_BROWSER)) {
+                      if (showChooser(uri, flags)) return
+                  }
+
+                  // 설치된 브라우저 중 크롬이 아닌 것을 순서대로 시도
                   for (pkg in altBrowsers) {
                       val i = Intent(Intent.ACTION_VIEW, uri).apply {
                           setPackage(pkg)
                           addFlags(flags)
                       }
-                      if (i.resolveActivity(packageManager) != null) {
-                          try {
-                              startActivity(i)
-                              return
-                          } catch (_: Exception) {
-                          }
+                      try {
+                          startActivity(i)
+                          return
+                      } catch (_: Exception) {
                       }
                   }
 
-                  // 다른 브라우저가 없으면 선택 창을 띄운다
+                  // 하나도 못 열면 선택 창
+                  if (showChooser(uri, flags)) return
+
                   try {
+                      startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(flags))
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun showChooser(uri: Uri, flags: Int): Boolean {
+                  return try {
                       val chooser = Intent.createChooser(
                           Intent(Intent.ACTION_VIEW, uri),
                           "어떤 브라우저로 열까요?"
                       ).apply { addFlags(flags) }
                       startActivity(chooser)
+                      true
                   } catch (_: Exception) {
+                      false
                   }
               }
 
@@ -942,6 +977,12 @@ jobs:
                       android:text="버튼 배경 없애기 (이모지만 표시)" />
 
                   <CheckBox
+                      android:id="@+id/askBrowserBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="📷 누를 때 브라우저 선택 창 띄우기" />
+
+                  <CheckBox
                       android:id="@+id/dndBox"
                       android:layout_width="wrap_content"
                       android:layout_height="wrap_content"
@@ -1037,11 +1078,11 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v8.apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v9.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: TapTap v8 (build ${{ github.run_number }})
+          name: TapTap v9 (build ${{ github.run_number }})
           files: app/build/outputs/apk/debug/*.apk
