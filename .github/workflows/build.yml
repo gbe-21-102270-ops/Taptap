@@ -33,8 +33,8 @@ jobs:
                   applicationId = "com.example.taptap"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 4
-                  versionName = "4.0"
+                  versionCode = 7
+                  versionName = "7.0"
               }
 
               signingConfigs {
@@ -319,6 +319,7 @@ jobs:
               private var params: WindowManager.LayoutParams? = null
               private val handler = Handler(Looper.getMainLooper())
 
+              private var dragOwner: View? = null
               private var savedFilter = -1
               private var dictDownAt = 0L
               private var cleanDownAt = 0L
@@ -401,8 +402,10 @@ jobs:
 
                   val dm = resources.displayMetrics
                   val stack = sizePx * count + dp(10) * (count - 1)
-                  lp.x = prefs.getInt(KEY_X, dm.widthPixels - sizePx - dp(16))
-                  lp.y = prefs.getInt(KEY_Y, dm.heightPixels - stack - dp(120))
+                  val wantX = prefs.getInt(KEY_X, dm.widthPixels - sizePx - dp(16))
+                  val wantY = prefs.getInt(KEY_Y, dm.heightPixels - stack - dp(120))
+                  lp.x = wantX.coerceIn(0, (dm.widthPixels - sizePx).coerceAtLeast(0))
+                  lp.y = wantY.coerceIn(0, (dm.heightPixels - stack).coerceAtLeast(0))
 
                   params = lp
                   panel = container
@@ -482,12 +485,19 @@ jobs:
                               val dx = (e.rawX - touchX).toInt()
                               val dy = (e.rawY - touchY).toInt()
                               if (abs(dx) > dp(8) || abs(dy) > dp(8)) moved = true
+
                               if (moved && !comboFired) {
-                                  lp.x = startX + dx
-                                  lp.y = startY + dy
-                                  try {
-                                      wm.updateViewLayout(root, lp)
-                                  } catch (_: Exception) {
+                                  if (dragOwner == null) dragOwner = v
+                                  if (dragOwner === v) {
+                                      val dm = resources.displayMetrics
+                                      val maxX = dm.widthPixels - root.width.coerceAtLeast(dp(40))
+                                      val maxY = dm.heightPixels - root.height.coerceAtLeast(dp(40))
+                                      lp.x = (startX + dx).coerceIn(0, maxX.coerceAtLeast(0))
+                                      lp.y = (startY + dy).coerceIn(0, maxY.coerceAtLeast(0))
+                                      try {
+                                          wm.updateViewLayout(root, lp)
+                                      } catch (_: Exception) {
+                                      }
                                   }
                               }
                               true
@@ -497,11 +507,14 @@ jobs:
 
                               if (tag == "dict") dictDownAt = 0
                               if (tag == "clean") cleanDownAt = 0
+                              if (dragOwner === v) dragOwner = null
 
                               if (comboFired) {
                                   if (dictDownAt == 0L && cleanDownAt == 0L) comboFired = false
                               } else if (moved) {
-                                  prefs.edit().putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).apply()
+                                  if (dragOwner === v) {
+                                      prefs.edit().putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).apply()
+                                  }
                               } else if (now - downTime < 600) {
                                   onTap()
                               }
@@ -628,12 +641,47 @@ jobs:
               // ---------- 각 버튼 동작 ----------
 
               private fun goToDictionary() {
-                  performGlobalAction(GLOBAL_ACTION_HOME)
-                  handler.postDelayed({ openUrl(DICT_URL, true) }, 350)
+                  openUrl(DICT_URL, false)
               }
 
+              // 크롬 말고 다른 브라우저 우선순위
+              private val altBrowsers = listOf(
+                  "com.sec.android.app.sbrowser",   // 삼성 인터넷
+                  "com.naver.whale",                // 웨일
+                  "org.mozilla.firefox",            // 파이어폭스
+                  "com.microsoft.emmx",             // 엣지
+                  "com.brave.browser",              // 브레이브
+                  "com.opera.browser",              // 오페라
+                  "com.duckduckgo.mobile.android"   // 덕덕고
+              )
+
               private fun openInstagram() {
-                  openUrl(INSTA_URL, false)
+                  val uri = Uri.parse(INSTA_URL)
+                  val flags = Intent.FLAG_ACTIVITY_NEW_TASK
+
+                  for (pkg in altBrowsers) {
+                      val i = Intent(Intent.ACTION_VIEW, uri).apply {
+                          setPackage(pkg)
+                          addFlags(flags)
+                      }
+                      if (i.resolveActivity(packageManager) != null) {
+                          try {
+                              startActivity(i)
+                              return
+                          } catch (_: Exception) {
+                          }
+                      }
+                  }
+
+                  // 다른 브라우저가 없으면 선택 창을 띄운다
+                  try {
+                      val chooser = Intent.createChooser(
+                          Intent(Intent.ACTION_VIEW, uri),
+                          "어떤 브라우저로 열까요?"
+                      ).apply { addFlags(flags) }
+                      startActivity(chooser)
+                  } catch (_: Exception) {
+                  }
               }
 
               private fun openUrl(url: String, clearTask: Boolean) {
@@ -807,7 +855,7 @@ jobs:
                       android:layout_marginTop="28dp"
                       android:textSize="15sp"
                       android:lineSpacingExtra="5dp"
-                      android:text="떠 있는 버튼을 짧게 탭하면\n• 📖 → 홈으로 나간 뒤 네이버 영어사전\n• 🧹 → 열려 있는 앱 모두 닫기\n• 📷 → 인스타그램 열기\n\n📖 과 🧹 를 동시에 누르면 화면이 꺼진 것처럼 됩니다.\n해제는 화면을 3초간 꾹 누르기.\n\n꾹 눌러 끌면 버튼 위치를 옮길 수 있습니다." />
+                      android:text="떠 있는 버튼을 짧게 탭하면\n• 📖 → 네이버 영어사전 바로 열기\n• 🧹 → 열려 있는 앱 모두 닫기\n• 📷 → 인스타그램 열기\n\n📖 과 🧹 를 동시에 누르면 화면이 꺼진 것처럼 됩니다.\n해제는 화면을 3초간 꾹 누르기.\n\n꾹 눌러 끌면 버튼 위치를 옮길 수 있습니다." />
 
                   <View
                       android:layout_width="match_parent"
@@ -905,7 +953,7 @@ jobs:
           <resources>
               <string name="app_name">TapTap</string>
               <string name="service_name">TapTap 제스처</string>
-              <string name="service_desc">화면에 떠 있는 버튼으로 네이버 영어사전을 열거나 열려 있는 앱을 모두 닫습니다.</string>
+              <string name="service_desc">화면에 떠 있는 버튼으로 네이버 영어사전이나 인스타그램을 열고, 열려 있는 앱을 모두 닫습니다.</string>
           </resources>
           TAPTAP_EOF
           cat > app/src/main/res/values/themes.xml << 'TAPTAP_EOF'
@@ -964,11 +1012,11 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v4.apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v7.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: TapTap v4 (build ${{ github.run_number }})
+          name: TapTap v7 (build ${{ github.run_number }})
           files: app/build/outputs/apk/debug/*.apk
