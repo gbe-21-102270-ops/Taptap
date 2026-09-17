@@ -33,8 +33,8 @@ jobs:
                   applicationId = "com.example.taptap"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0 (사전+모두닫기)"
+                  versionCode = 4
+                  versionName = "4.0"
               }
 
               signingConfigs {
@@ -151,6 +151,9 @@ jobs:
                   val alphaBar = findViewById<SeekBar>(R.id.alphaBar)
                   val vibrateBox = findViewById<CheckBox>(R.id.vibrateBox)
                   val recentsBox = findViewById<CheckBox>(R.id.recentsBox)
+                  val instaBox = findViewById<CheckBox>(R.id.instaBox)
+                  val flatBox = findViewById<CheckBox>(R.id.flatBox)
+                  val dndBox = findViewById<CheckBox>(R.id.dndBox)
 
                   // 크기: 40 ~ 100 dp
                   val size = prefs.getInt(TapService.KEY_SIZE, TapService.DEF_SIZE)
@@ -160,13 +163,17 @@ jobs:
 
                   // 투명도: 20 ~ 100 %
                   val alpha = prefs.getInt(TapService.KEY_ALPHA, TapService.DEF_ALPHA)
-                  alphaBar.max = 80
-                  alphaBar.progress = alpha - 20
+                  alphaBar.max = 90
+                  alphaBar.progress = (alpha - 10).coerceAtLeast(0)
                   showAlpha(alpha)
 
                   vibrateBox.isChecked = prefs.getBoolean(TapService.KEY_VIBRATE, TapService.DEF_VIBRATE)
                   recentsBox.isChecked =
                       prefs.getBoolean(TapService.KEY_SHOW_RECENTS, TapService.DEF_SHOW_RECENTS)
+                  instaBox.isChecked =
+                      prefs.getBoolean(TapService.KEY_SHOW_INSTA, TapService.DEF_SHOW_INSTA)
+                  flatBox.isChecked = prefs.getBoolean(TapService.KEY_FLAT, TapService.DEF_FLAT)
+                  dndBox.isChecked = prefs.getBoolean(TapService.KEY_DND, TapService.DEF_DND)
 
                   sizeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                       override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showSize(p + 40)
@@ -177,10 +184,10 @@ jobs:
                   })
 
                   alphaBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showAlpha(p + 20)
+                      override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = showAlpha(p + 10)
                       override fun onStartTrackingTouch(sb: SeekBar?) {}
                       override fun onStopTrackingTouch(sb: SeekBar?) {
-                          prefs.edit().putInt(TapService.KEY_ALPHA, (sb?.progress ?: 0) + 20).apply()
+                          prefs.edit().putInt(TapService.KEY_ALPHA, (sb?.progress ?: 0) + 10).apply()
                       }
                   })
 
@@ -190,9 +197,28 @@ jobs:
                   recentsBox.setOnCheckedChangeListener { _, c ->
                       prefs.edit().putBoolean(TapService.KEY_SHOW_RECENTS, c).apply()
                   }
+                  instaBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_SHOW_INSTA, c).apply()
+                  }
+                  flatBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_FLAT, c).apply()
+                  }
+                  dndBox.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(TapService.KEY_DND, c).apply()
+                  }
 
                   findViewById<Button>(R.id.btnOpenSettings).setOnClickListener {
                       startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+
+                  findViewById<Button>(R.id.btnDndPerm).setOnClickListener {
+                      try {
+                          startActivity(
+                              Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                          )
+                      } catch (e: Exception) {
+                          status.text = "이 기기에서는 권한 화면을 열 수 없습니다"
+                      }
                   }
 
                   findViewById<Button>(R.id.btnResetPos).setOnClickListener {
@@ -232,6 +258,7 @@ jobs:
           package com.example.taptap
 
           import android.accessibilityservice.AccessibilityService
+          import android.app.NotificationManager
           import android.content.Context
           import android.content.Intent
           import android.content.SharedPreferences
@@ -247,10 +274,10 @@ jobs:
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.View
-          import android.view.ViewGroup
           import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
           import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.FrameLayout
           import android.widget.LinearLayout
           import android.widget.TextView
           import kotlin.math.abs
@@ -263,6 +290,9 @@ jobs:
                   const val KEY_ALPHA = "button_alpha"
                   const val KEY_VIBRATE = "vibrate"
                   const val KEY_SHOW_RECENTS = "show_recents"
+                  const val KEY_SHOW_INSTA = "show_insta"
+                  const val KEY_FLAT = "flat_button"
+                  const val KEY_DND = "block_noti"
                   const val KEY_X = "pos_x"
                   const val KEY_Y = "pos_y"
 
@@ -270,15 +300,29 @@ jobs:
                   const val DEF_ALPHA = 70
                   const val DEF_VIBRATE = true
                   const val DEF_SHOW_RECENTS = true
+                  const val DEF_SHOW_INSTA = true
+                  const val DEF_FLAT = false
+                  const val DEF_DND = true
 
                   private const val DICT_URL = "https://en.dict.naver.com/"
+                  private const val INSTA_URL = "https://www.instagram.com/"
+
+                  private const val COMBO_WINDOW = 900L      // 동시 누름 인정 시간
+                  private const val UNLOCK_HOLD = 3000L      // 해제까지 누르는 시간
+                  private const val AUTO_EXIT = 15 * 60_000L // 안전장치: 자동 해제
               }
 
-              private var panel: View? = null
+              private var panel: LinearLayout? = null
+              private var blackout: View? = null
               private lateinit var prefs: SharedPreferences
               private lateinit var wm: WindowManager
               private var params: WindowManager.LayoutParams? = null
               private val handler = Handler(Looper.getMainLooper())
+
+              private var savedFilter = -1
+              private var dictDownAt = 0L
+              private var cleanDownAt = 0L
+              private var comboFired = false
 
               private val prefListener =
                   SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -294,6 +338,8 @@ jobs:
 
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+              // ---------- 떠 있는 버튼들 ----------
+
               private fun rebuild() {
                   panel?.let {
                       try {
@@ -307,6 +353,7 @@ jobs:
                   val sizePx = dp(sizeDp)
                   val alphaPct = prefs.getInt(KEY_ALPHA, DEF_ALPHA)
                   val showRecents = prefs.getBoolean(KEY_SHOW_RECENTS, DEF_SHOW_RECENTS)
+                  val showInsta = prefs.getBoolean(KEY_SHOW_INSTA, DEF_SHOW_INSTA)
 
                   val container = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
@@ -314,19 +361,31 @@ jobs:
                       alpha = alphaPct / 100f
                   }
 
-                  val dict = makeCircle("📖", "#2E7D32", sizeDp, sizePx) {
+                  var count = 1
+                  val dict = makeCircle("📖", "#2E7D32", sizeDp, sizePx, "dict") {
                       buzz(35)
                       goToDictionary()
                   }
                   container.addView(dict)
 
                   if (showRecents) {
-                      val recents = makeCircle("🧹", "#C62828", sizeDp, sizePx) {
+                      val clean = makeCircle("🧹", "#C62828", sizeDp, sizePx, "clean") {
                           buzz(35)
                           closeAllApps()
                       }
-                      (recents.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
-                      container.addView(recents)
+                      (clean.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
+                      container.addView(clean)
+                      count++
+                  }
+
+                  if (showInsta) {
+                      val insta = makeCircle("📷", "#6A1B9A", sizeDp, sizePx, "insta") {
+                          buzz(35)
+                          openInstagram()
+                      }
+                      (insta.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
+                      container.addView(insta)
+                      count++
                   }
 
                   val lp = WindowManager.LayoutParams(
@@ -334,13 +393,14 @@ jobs:
                       WindowManager.LayoutParams.WRAP_CONTENT,
                       WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                       PixelFormat.TRANSLUCENT
                   )
                   lp.gravity = Gravity.TOP or Gravity.START
 
                   val dm = resources.displayMetrics
-                  val stack = if (showRecents) sizePx * 2 + dp(10) else sizePx
+                  val stack = sizePx * count + dp(10) * (count - 1)
                   lp.x = prefs.getInt(KEY_X, dm.widthPixels - sizePx - dp(16))
                   lp.y = prefs.getInt(KEY_Y, dm.heightPixels - stack - dp(120))
 
@@ -357,6 +417,7 @@ jobs:
                   color: String,
                   sizeDp: Int,
                   sizePx: Int,
+                  tag: String,
                   onTap: () -> Unit
               ): View {
                   val tv = TextView(this).apply {
@@ -364,19 +425,24 @@ jobs:
                       textSize = sizeDp * 0.42f
                       gravity = Gravity.CENTER
                       setTextColor(Color.WHITE)
-                      background = GradientDrawable().apply {
-                          shape = GradientDrawable.OVAL
-                          setColor(Color.parseColor(color))
-                          setStroke(dp(2), Color.parseColor("#66FFFFFF"))
+                      if (prefs.getBoolean(KEY_FLAT, DEF_FLAT)) {
+                          background = null
+                          setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.parseColor("#88000000"))
+                      } else {
+                          background = GradientDrawable().apply {
+                              shape = GradientDrawable.OVAL
+                              setColor(Color.parseColor(color))
+                              setStroke(dp(2), Color.parseColor("#66FFFFFF"))
+                          }
+                          elevation = dp(6).toFloat()
                       }
-                      elevation = dp(6).toFloat()
                       layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
                   }
-                  attachTouch(tv, onTap)
+                  attachTouch(tv, tag, onTap)
                   return tv
               }
 
-              private fun attachTouch(view: View, onTap: () -> Unit) {
+              private fun attachTouch(view: View, tag: String, onTap: () -> Unit) {
                   var startX = 0
                   var startY = 0
                   var touchX = 0f
@@ -387,6 +453,7 @@ jobs:
                   view.setOnTouchListener { v, e ->
                       val lp = params ?: return@setOnTouchListener false
                       val root = panel ?: return@setOnTouchListener false
+                      val now = System.currentTimeMillis()
 
                       when (e.action) {
                           MotionEvent.ACTION_DOWN -> {
@@ -394,16 +461,28 @@ jobs:
                               startY = lp.y
                               touchX = e.rawX
                               touchY = e.rawY
-                              downTime = System.currentTimeMillis()
+                              downTime = now
                               moved = false
                               v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).start()
+
+                              if (tag == "dict") dictDownAt = now
+                              if (tag == "clean") cleanDownAt = now
+
+                              // 📖 + 🧹 동시 누름 → 화면 끄기
+                              if (dictDownAt > 0 && cleanDownAt > 0 &&
+                                  abs(dictDownAt - cleanDownAt) < COMBO_WINDOW && !comboFired
+                              ) {
+                                  comboFired = true
+                                  buzz(120)
+                                  handler.postDelayed({ showBlackout() }, 150)
+                              }
                               true
                           }
                           MotionEvent.ACTION_MOVE -> {
                               val dx = (e.rawX - touchX).toInt()
                               val dy = (e.rawY - touchY).toInt()
                               if (abs(dx) > dp(8) || abs(dy) > dp(8)) moved = true
-                              if (moved) {
+                              if (moved && !comboFired) {
                                   lp.x = startX + dx
                                   lp.y = startY + dy
                                   try {
@@ -415,18 +494,168 @@ jobs:
                           }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                               v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
-                              if (moved) {
-                                  prefs.edit()
-                                      .putInt(KEY_X, lp.x)
-                                      .putInt(KEY_Y, lp.y)
-                                      .apply()
-                              } else if (System.currentTimeMillis() - downTime < 600) {
+
+                              if (tag == "dict") dictDownAt = 0
+                              if (tag == "clean") cleanDownAt = 0
+
+                              if (comboFired) {
+                                  if (dictDownAt == 0L && cleanDownAt == 0L) comboFired = false
+                              } else if (moved) {
+                                  prefs.edit().putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).apply()
+                              } else if (now - downTime < 600) {
                                   onTap()
                               }
                               true
                           }
                           else -> false
                       }
+                  }
+              }
+
+              // ---------- 가짜 화면 끄기 ----------
+
+              private fun showBlackout() {
+                  if (blackout != null) return
+
+                  panel?.visibility = View.GONE
+
+                  val frame = FrameLayout(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                  }
+
+                  val hint = TextView(this).apply {
+                      text = "3초 길게 누르면 해제"
+                      setTextColor(Color.parseColor("#33FFFFFF"))
+                      textSize = 13f
+                      gravity = Gravity.CENTER
+                  }
+                  frame.addView(
+                      hint,
+                      FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          FrameLayout.LayoutParams.WRAP_CONTENT,
+                          Gravity.CENTER
+                      )
+                  )
+                  hint.animate().alpha(0f).setStartDelay(2000).setDuration(1200).start()
+
+                  var holdX = 0f
+                  var holdY = 0f
+                  val unlock = Runnable { hideBlackout() }
+
+                  frame.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              holdX = e.rawX
+                              holdY = e.rawY
+                              handler.postDelayed(unlock, UNLOCK_HOLD)
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              if (abs(e.rawX - holdX) > dp(40) || abs(e.rawY - holdY) > dp(40)) {
+                                  handler.removeCallbacks(unlock)
+                              }
+                          }
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                              handler.removeCallbacks(unlock)
+                          }
+                      }
+                      true
+                  }
+
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.OPAQUE
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+                  lp.screenBrightness = 0.02f
+
+                  startDnd()
+
+                  blackout = frame
+                  try {
+                      wm.addView(frame, lp)
+                  } catch (_: Exception) {
+                      blackout = null
+                      stopDnd()
+                      panel?.visibility = View.VISIBLE
+                      return
+                  }
+
+                  // 안전장치: 오래 두면 저절로 풀림
+                  handler.postDelayed({ hideBlackout() }, AUTO_EXIT)
+              }
+
+              private fun hideBlackout() {
+                  val b = blackout ?: return
+                  blackout = null
+                  try {
+                      wm.removeView(b)
+                  } catch (_: Exception) {
+                  }
+                  stopDnd()
+                  panel?.visibility = View.VISIBLE
+                  buzz(40)
+              }
+
+              private fun startDnd() {
+                  if (!prefs.getBoolean(KEY_DND, DEF_DND)) return
+                  try {
+                      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      if (!nm.isNotificationPolicyAccessGranted) return
+                      savedFilter = nm.currentInterruptionFilter
+                      nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun stopDnd() {
+                  if (savedFilter == -1) return
+                  try {
+                      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      if (nm.isNotificationPolicyAccessGranted) {
+                          nm.setInterruptionFilter(savedFilter)
+                      }
+                  } catch (_: Exception) {
+                  }
+                  savedFilter = -1
+              }
+
+              // ---------- 각 버튼 동작 ----------
+
+              private fun goToDictionary() {
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+                  handler.postDelayed({ openUrl(DICT_URL, true) }, 350)
+              }
+
+              private fun openInstagram() {
+                  openUrl(INSTA_URL, false)
+              }
+
+              private fun openUrl(url: String, clearTask: Boolean) {
+                  val uri = Uri.parse(url)
+                  var flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                  if (clearTask) {
+                      flags = flags or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_HISTORY
+                  }
+
+                  val chrome = Intent(Intent.ACTION_VIEW, uri).apply {
+                      setPackage("com.android.chrome")
+                      addFlags(flags)
+                  }
+                  try {
+                      startActivity(chrome)
+                      return
+                  } catch (_: Exception) {
+                  }
+
+                  try {
+                      startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(flags))
+                  } catch (_: Exception) {
                   }
               }
 
@@ -468,7 +697,6 @@ jobs:
                           } catch (_: Exception) {
                               null
                           } ?: continue
-
                           for (node in found) {
                               if (clickNode(node)) return true
                           }
@@ -481,40 +709,11 @@ jobs:
                   var n = node
                   var depth = 0
                   while (n != null && depth < 5) {
-                      if (n.isClickable) {
-                          return n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      }
+                      if (n.isClickable) return n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                       n = n.parent
                       depth++
                   }
                   return false
-              }
-
-              private fun goToDictionary() {
-                  performGlobalAction(GLOBAL_ACTION_HOME)
-                  handler.postDelayed({ openEnDict() }, 350)
-              }
-
-              private fun openEnDict() {
-                  val uri = Uri.parse(DICT_URL)
-                  val flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                      Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                      Intent.FLAG_ACTIVITY_NO_HISTORY
-
-                  val chrome = Intent(Intent.ACTION_VIEW, uri).apply {
-                      setPackage("com.android.chrome")
-                      addFlags(flags)
-                  }
-                  try {
-                      startActivity(chrome)
-                      return
-                  } catch (_: Exception) {
-                  }
-
-                  try {
-                      startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(flags))
-                  } catch (_: Exception) {
-                  }
               }
 
               private fun buzz(ms: Long) {
@@ -532,10 +731,19 @@ jobs:
               }
 
               override fun onDestroy() {
+                  handler.removeCallbacksAndMessages(null)
                   try {
                       prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
                   } catch (_: Exception) {
                   }
+                  blackout?.let {
+                      try {
+                          wm.removeView(it)
+                      } catch (_: Exception) {
+                      }
+                  }
+                  blackout = null
+                  stopDnd()
                   panel?.let {
                       try {
                           wm.removeView(it)
@@ -599,7 +807,7 @@ jobs:
                       android:layout_marginTop="28dp"
                       android:textSize="15sp"
                       android:lineSpacingExtra="5dp"
-                      android:text="화면에 떠 있는 버튼을 짧게 탭하면\n• 📖 → 홈으로 나간 뒤 네이버 영어사전 열기\n• 🧹 → 열려 있는 앱 모두 닫기\n\n꾹 눌러 끌면 위치를 옮길 수 있습니다." />
+                      android:text="떠 있는 버튼을 짧게 탭하면\n• 📖 → 홈으로 나간 뒤 네이버 영어사전\n• 🧹 → 열려 있는 앱 모두 닫기\n• 📷 → 인스타그램 열기\n\n📖 과 🧹 를 동시에 누르면 화면이 꺼진 것처럼 됩니다.\n해제는 화면을 3초간 꾹 누르기.\n\n꾹 눌러 끌면 버튼 위치를 옮길 수 있습니다." />
 
                   <View
                       android:layout_width="match_parent"
@@ -647,6 +855,31 @@ jobs:
                       android:layout_width="wrap_content"
                       android:layout_height="wrap_content"
                       android:text="🧹 모두 닫기 버튼 표시" />
+
+                  <CheckBox
+                      android:id="@+id/instaBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="📷 인스타그램 버튼 표시" />
+
+                  <CheckBox
+                      android:id="@+id/flatBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="버튼 배경 없애기 (이모지만 표시)" />
+
+                  <CheckBox
+                      android:id="@+id/dndBox"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="화면 끌 때 알림 차단 (방해금지)" />
+
+                  <Button
+                      android:id="@+id/btnDndPerm"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp"
+                      android:text="알림 차단 권한 허용하기" />
 
                   <Button
                       android:id="@+id/btnResetPos"
@@ -731,11 +964,11 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v2.apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/TapTap-v4.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: TapTap v2 (build ${{ github.run_number }})
+          name: TapTap v4 (build ${{ github.run_number }})
           files: app/build/outputs/apk/debug/*.apk
